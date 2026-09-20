@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Focusboard
+Comment=Reminders, focus list, and task tracking
+Exec=focusboard
+Icon=focusboard
+Terminal=false
+Categories=Office;Calendar;Utility;
+StartupNotify=true
+X-GNOME-UsesNotifications=true
+X-GNOME-Autostart-enabled=true
