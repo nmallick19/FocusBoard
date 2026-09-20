@@ -33,7 +33,7 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def _stop_pid(pid: int, wait_seconds: float = 6.0) -> None:
+def _stop_pid(pid: int, wait_seconds: float = 1.0) -> None:
     if pid <= 0 or pid == os.getpid():
         return
     try:
@@ -71,11 +71,11 @@ def acquire_instance_lock() -> QLockFile:
     else:
         lock.removeStaleLockFile()
 
-    if lock.tryLock(4000):
+    if lock.tryLock(800):
         return lock
 
     lock.removeStaleLockFile()
-    if lock.tryLock(1000):
+    if lock.tryLock(400):
         return lock
 
     print("Focusboard is already running and could not be replaced.", file=sys.stderr)

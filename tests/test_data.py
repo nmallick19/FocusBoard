@@ -4,7 +4,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from focusboard.db import Database
-from focusboard.models import Status, Task
+from focusboard.models import Status, Task, align_to_weekdays, encode_repeat_days, parse_repeat_days
 from focusboard.ranking import importance, ranked
 
 
@@ -248,13 +248,20 @@ def test_format_due_row_uses_relative_days():
     from focusboard.util import format_due_row
 
     now = datetime(2026, 9, 20, 12, 0, 0)
-    assert format_due_row(now, now) == "Today 12:00"
-    assert format_due_row(now + timedelta(days=1), now) == "Tomorrow 12:00"
-    assert format_due_row(now + timedelta(days=3), now) == "23 Sep 12:00"
-    from focusboard.util import due_row_parts
+    assert format_due_row(now, now) == "Today 12:00 · in 1m"
+    assert format_due_row(now + timedelta(days=1), now) == "Tomorrow 12:00 · in 1d"
+    assert format_due_row(now + timedelta(days=3), now) == "Wed 23 Sep 12:00 · in 3d"
+    from focusboard.util import due_band, due_row_parts, format_deadline
 
-    assert due_row_parts(now, now) == ("Today", "12:00")
-    assert due_row_parts(now + timedelta(days=1), now) == ("Tomorrow", "12:00")
+    assert due_row_parts(now, now)[0:2] == ("Today", "12:00")
+    assert due_row_parts(now + timedelta(days=1), now)[0:2] == ("Tomorrow", "12:00")
+    assert due_band(now, now, overdue=False) == "today"
+    assert due_band(now + timedelta(days=1), now, overdue=False) == "tomorrow"
+    assert due_band(now + timedelta(days=3), now, overdue=False) == "later"
+    assert due_band(now - timedelta(hours=2), now, overdue=True) == "overdue"
+    assert format_deadline(now + timedelta(hours=5), now) == "in 5h"
+    assert format_deadline(now - timedelta(hours=2), now) == "2h late"
+    assert format_deadline(now + timedelta(days=4), now) == "in 4d"
 
 
 def test_progress_ratio_uses_elapsed_against_estimate():
@@ -543,3 +550,90 @@ def test_meeting_reminder_window():
     assert meeting.meeting_reminder_due(now) is False
     one_off = _task(category="meetings", due_at=now + timedelta(hours=2))
     assert one_off.next_occurrence(now) is None
+
+
+def test_recurring_task_rolls_forward_on_finish(tmp_path: Path):
+    db = _db(tmp_path)
+    start = datetime.now().replace(microsecond=0) + timedelta(days=1)
+    until = start + timedelta(weeks=4)
+    task = db.create_task(
+        title="Water plants",
+        due_at=start,
+        repeat="weekly",
+        repeat_until=until,
+    )
+    assert task.is_recurring()
+    finished = db.finish_task(task.id)
+    assert finished.status == Status.TODO
+    assert finished.due_at == start + timedelta(weeks=1)
+    dates = db.dates_with_tasks(start.year, start.month)
+    assert start.date() in dates
+    next_week = (start + timedelta(weeks=1)).date()
+    if next_week.month == start.month:
+        assert next_week in dates
+
+
+def test_specific_days_repeat_steps_and_maps_calendar(tmp_path: Path):
+    db = _db(tmp_path)
+    start = datetime(2026, 9, 21, 10, 0, 0)
+    until = datetime(2026, 10, 2, 23, 59, 0)
+    task = db.create_task(
+        title="Gym",
+        due_at=start,
+        repeat="on_days",
+        repeat_days="0,3",
+        repeat_until=until,
+    )
+    assert task.is_recurring()
+    assert task.repeat_label() == "Mon, Thu"
+    assert encode_repeat_days([3, 0, 3]) == "0,3"
+    assert parse_repeat_days("0,3") == (0, 3)
+    assert align_to_weekdays(datetime(2026, 9, 23, 10, 0, 0), (0, 3)) == datetime(2026, 9, 24, 10, 0, 0)
+    assert task.next_occurrence(start) == datetime(2026, 9, 24, 10, 0, 0)
+    dates = db.dates_with_tasks(2026, 9)
+    assert date(2026, 9, 21) in dates
+    assert date(2026, 9, 24) in dates
+    assert date(2026, 9, 28) in dates
+    assert date(2026, 9, 22) not in dates
+    assert date(2026, 9, 23) not in dates
+    day = db.tasks_for_date(date(2026, 9, 24))
+    assert [item.title for item in day] == ["Gym"]
+    assert day[0].when() == datetime(2026, 9, 24, 10, 0, 0)
+    expected_next = task.next_occurrence(max(start, datetime.now().replace(microsecond=0)))
+    finished = db.finish_task(task.id)
+    if expected_next is not None:
+        assert finished.status == Status.TODO
+        assert finished.due_at == expected_next
+    copied = task.as_draft()
+    assert copied.repeat == "on_days"
+    assert copied.repeat_days == "0,3"
+
+
+def test_meeting_place_can_be_empty(tmp_path: Path):
+    db = _db(tmp_path)
+    meeting = db.create_task(
+        title="Walk",
+        due_at=datetime.now() + timedelta(hours=2),
+        category="meetings",
+    )
+    assert meeting.meeting_place() == ""
+    copied = meeting.as_draft()
+    assert copied.id is None
+    assert copied.title == "Walk"
+
+
+def test_activity_log_keeps_seven_days(tmp_path: Path):
+    db = _db(tmp_path)
+    db.log_event("start", "Now", source="user", task_id=1)
+    old = datetime.now().replace(microsecond=0) - timedelta(days=8)
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT INTO activity_log (created_at, source, action, detail, task_id) VALUES (?, ?, ?, ?, ?)",
+            (old.isoformat(sep=" "), "app", "stale", "gone", None),
+        )
+    db.log_event("pause", "Now", source="app")
+    events = db.list_activity()
+    actions = {event.action for event in events}
+    assert "start" in actions
+    assert "pause" in actions
+    assert "stale" not in actions

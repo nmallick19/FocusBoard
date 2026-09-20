@@ -18,7 +18,7 @@ def _loginctl_flag(name: str) -> bool | None:
         output = subprocess.check_output(
             ["loginctl", "show-session", "self", "-p", name],
             text=True,
-            timeout=1,
+            timeout=0.4,
             stderr=subprocess.DEVNULL,
         )
     except (OSError, subprocess.SubprocessError):
@@ -44,6 +44,7 @@ def _screensaver_active() -> bool | None:
         proxy = QDBusInterface(service, path, iface, bus)
         if not proxy.isValid():
             continue
+        proxy.setTimeout(400)
         reply = proxy.call("GetActive")
         if reply.type() == QDBusMessage.MessageType.ReplyMessage and reply.arguments():
             return bool(reply.arguments()[0])
@@ -68,7 +69,7 @@ def display_is_off() -> bool:
         output = subprocess.check_output(
             ["xset", "q"],
             text=True,
-            timeout=1,
+            timeout=0.4,
             stderr=subprocess.DEVNULL,
         )
     except (OSError, subprocess.SubprocessError):
@@ -98,6 +99,7 @@ class SessionGuard(QObject):
         super().__init__(parent)
         self._away = False
         self._sleeping = False
+        self._stopped = False
         self._poll = QTimer(self)
         self._poll.setInterval(2000)
         self._poll.timeout.connect(self._tick)
@@ -105,7 +107,14 @@ class SessionGuard(QObject):
         self._poll.start()
         QTimer.singleShot(400, self._tick)
 
+    def stop(self) -> None:
+        self._stopped = True
+        self._poll.stop()
+        self._unbind_dbus()
+
     def is_away(self) -> bool:
+        if self._stopped:
+            return self._away or self._sleeping
         return self._away or self._sleeping or session_unavailable_reason() is not None
 
     def _bind_dbus(self) -> None:
@@ -140,6 +149,38 @@ class SessionGuard(QObject):
                 SLOT_SLEEP,
             )
 
+    def _unbind_dbus(self) -> None:
+        if QDBusConnection is None:
+            return
+        session = QDBusConnection.sessionBus()
+        if session.isConnected():
+            session.disconnect(
+                "org.gnome.ScreenSaver",
+                "/org/gnome/ScreenSaver",
+                "org.gnome.ScreenSaver",
+                "ActiveChanged",
+                self,
+                SLOT_ACTIVE,
+            )
+            session.disconnect(
+                "org.freedesktop.ScreenSaver",
+                "/org/freedesktop/ScreenSaver",
+                "org.freedesktop.ScreenSaver",
+                "ActiveChanged",
+                self,
+                SLOT_ACTIVE,
+            )
+        system = QDBusConnection.systemBus()
+        if system.isConnected():
+            system.disconnect(
+                "org.freedesktop.login1",
+                "/org/freedesktop/login1",
+                "org.freedesktop.login1.Manager",
+                "PrepareForSleep",
+                self,
+                SLOT_SLEEP,
+            )
+
     @Slot(bool)
     def on_screensaver_active(self, active: bool) -> None:
         self._apply(locked=active, reason="screen_lock")
@@ -153,7 +194,7 @@ class SessionGuard(QObject):
             self._apply(locked=False, reason="sleep")
 
     def _tick(self) -> None:
-        if self._sleeping:
+        if self._stopped or self._sleeping:
             return
         reason = session_unavailable_reason()
         if reason:

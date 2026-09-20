@@ -39,6 +39,7 @@ class Repeat(StrEnum):
     WEEKLY = "weekly"
     BIWEEKLY = "biweekly"
     MONTHLY = "monthly"
+    ON_DAYS = "on_days"
 
 
 class DelayReason(StrEnum):
@@ -88,7 +89,10 @@ REPEAT_LABELS = {
     Repeat.WEEKLY: "Weekly",
     Repeat.BIWEEKLY: "Every 2 weeks",
     Repeat.MONTHLY: "Monthly",
+    Repeat.ON_DAYS: "Specific days",
 }
+
+WEEKDAY_LABELS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
 PAUSE_REASON_USER = "user"
 PAUSE_REASON_CHECKIN = "checkin"
@@ -143,13 +147,62 @@ def statuses_for_filters(*, next: bool = True, ongoing: bool = True, finished: b
     return tuple(selected)
 
 
-def _step_repeat(dt: datetime, repeat: str) -> datetime:
+def parse_repeat_days(value: str | None) -> tuple[int, ...]:
+    if not value:
+        return ()
+    days: list[int] = []
+    for part in value.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            day = int(part)
+        except ValueError:
+            continue
+        if 0 <= day <= 6 and day not in days:
+            days.append(day)
+    return tuple(sorted(days))
+
+
+def encode_repeat_days(days: list[int] | tuple[int, ...]) -> str:
+    return ",".join(str(day) for day in parse_repeat_days(",".join(str(day) for day in days)))
+
+
+def align_to_weekdays(dt: datetime, days: tuple[int, ...]) -> datetime:
+    if not days:
+        return dt
+    for offset in range(0, 7):
+        nxt = dt + timedelta(days=offset)
+        if nxt.weekday() in days:
+            return nxt
+    return dt
+
+
+def format_repeat(repeat: str, days: str = "") -> str:
+    if repeat == Repeat.ON_DAYS:
+        selected = parse_repeat_days(days)
+        if selected:
+            return ", ".join(WEEKDAY_LABELS[day] for day in selected)
+        return REPEAT_LABELS[Repeat.ON_DAYS]
+    return REPEAT_LABELS.get(repeat, "Does not repeat")
+
+
+def _step_repeat(dt: datetime, repeat: str, days: tuple[int, ...] = ()) -> datetime:
     if repeat == Repeat.DAILY:
         return dt + timedelta(days=1)
     if repeat == Repeat.WEEKLY:
         return dt + timedelta(weeks=1)
     if repeat == Repeat.BIWEEKLY:
         return dt + timedelta(weeks=2)
+    if repeat == Repeat.ON_DAYS:
+        selected = days or parse_repeat_days("")
+        if not selected:
+            return dt + timedelta(days=1)
+        for offset in range(1, 8):
+            nxt = dt + timedelta(days=offset)
+            if nxt.weekday() in selected:
+                return nxt
+        return dt + timedelta(days=7)
     month = dt.month - 1 + 1
     year = dt.year + month // 12
     month = month % 12 + 1
@@ -185,6 +238,7 @@ class Task:
     meeting_url: str = ""
     location: str = ""
     shown_at: datetime | None = None
+    repeat_days: str = ""
 
     def is_paused(self) -> bool:
         return (
@@ -207,7 +261,17 @@ class Task:
         return self.due_at - MEETING_REMIND_BEFORE <= now < self.due_at
 
     def is_recurring(self) -> bool:
-        return self.is_meeting() and self.repeat not in ("", Repeat.NONE)
+        if self.repeat_until is None or self.repeat in ("", Repeat.NONE):
+            return False
+        if self.repeat == Repeat.ON_DAYS:
+            return bool(parse_repeat_days(self.repeat_days))
+        return True
+
+    def weekdays(self) -> tuple[int, ...]:
+        return parse_repeat_days(self.repeat_days)
+
+    def repeat_label(self) -> str:
+        return format_repeat(self.repeat, self.repeat_days)
 
     def meeting_place(self) -> str:
         if self.meeting_url.strip():
@@ -217,17 +281,55 @@ class Task:
     def when(self) -> datetime:
         return self.shown_at or self.due_at
 
+    def snapshot(self) -> dict:
+        return {
+            "title": self.title,
+            "notes": self.notes,
+            "category": self.category,
+            "due_at": self.due_at,
+            "priority": self.priority,
+            "difficulty": self.difficulty,
+            "estimated_minutes": self.estimated_minutes,
+            "repeat": self.repeat,
+            "repeat_until": self.repeat_until,
+            "repeat_from": self.repeat_from or self.due_at,
+            "repeat_days": self.repeat_days,
+            "meeting_url": self.meeting_url,
+            "location": self.location,
+        }
+
+    def as_draft(self) -> "Task":
+        return Task(
+            id=None,
+            title=self.title,
+            notes=self.notes,
+            category=self.category,
+            due_at=self.due_at,
+            priority=self.priority,
+            status=Status.TODO.value,
+            difficulty=self.difficulty,
+            estimated_minutes=self.estimated_minutes,
+            repeat=self.repeat,
+            repeat_until=self.repeat_until,
+            repeat_from=self.repeat_from,
+            repeat_days=self.repeat_days,
+            meeting_url=self.meeting_url,
+            location=self.location,
+        )
+
     def next_occurrence(self, after: datetime | None = None) -> datetime | None:
         after = after or datetime.now()
         if not self.is_recurring() or self.repeat_until is None:
             return None
         current = self.due_at
+        if self.repeat == Repeat.ON_DAYS:
+            current = align_to_weekdays(current, self.weekdays())
         if current > after and current.date() <= self.repeat_until.date():
             return current
-        current = _step_repeat(current, self.repeat)
+        current = _step_repeat(current, self.repeat, self.weekdays())
         guard = 0
         while current <= after and guard < 800:
-            current = _step_repeat(current, self.repeat)
+            current = _step_repeat(current, self.repeat, self.weekdays())
             guard += 1
             if current.date() > self.repeat_until.date():
                 return None
@@ -236,23 +338,23 @@ class Task:
         return current
 
     def occurrences_between(self, start: datetime, end: datetime) -> list[datetime]:
-        if not self.is_meeting():
-            return [self.due_at] if start <= self.due_at <= end else []
         if not self.is_recurring() or self.repeat_until is None:
             return [self.due_at] if start <= self.due_at <= end else []
         origin = self.repeat_from or self.due_at
         current = origin
+        if self.repeat == Repeat.ON_DAYS:
+            current = align_to_weekdays(current, self.weekdays())
         found: list[datetime] = []
         guard = 0
         while current < start and guard < 800:
-            current = _step_repeat(current, self.repeat)
+            current = _step_repeat(current, self.repeat, self.weekdays())
             guard += 1
             if current.date() > self.repeat_until.date():
                 return []
         while current <= end and current.date() <= self.repeat_until.date() and len(found) < 400:
             if current >= start:
                 found.append(current)
-            current = _step_repeat(current, self.repeat)
+            current = _step_repeat(current, self.repeat, self.weekdays())
         return found
 
     def checkin_due_at(self) -> datetime | None:
@@ -325,3 +427,16 @@ class WeekStats:
     missed: int
     seconds: int
     estimated_minutes: int
+
+
+@dataclass
+class ActivityEvent:
+    id: int
+    created_at: datetime
+    source: str
+    action: str
+    detail: str
+    task_id: int | None = None
+
+
+LOG_KEEP = timedelta(days=7)

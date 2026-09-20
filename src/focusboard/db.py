@@ -6,7 +6,9 @@ from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 from focusboard.models import (
+    LOG_KEEP,
     PAUSE_REASON_USER,
+    ActivityEvent,
     ReminderBuckets,
     Status,
     Task,
@@ -42,6 +44,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     repeat TEXT NOT NULL DEFAULT 'none',
     repeat_until TEXT,
     repeat_from TEXT,
+    repeat_days TEXT NOT NULL DEFAULT '',
     meeting_url TEXT NOT NULL DEFAULT '',
     location TEXT NOT NULL DEFAULT ''
 );
@@ -53,6 +56,16 @@ CREATE TABLE IF NOT EXISTS settings (
 
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(due_at);
+
+CREATE TABLE IF NOT EXISTS activity_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    source TEXT NOT NULL,
+    action TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    task_id INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_activity_created ON activity_log(created_at);
 """
 
 
@@ -123,10 +136,27 @@ class Database:
             conn.execute("ALTER TABLE tasks ADD COLUMN repeat_until TEXT")
         if "repeat_from" not in cols:
             conn.execute("ALTER TABLE tasks ADD COLUMN repeat_from TEXT")
+        if "repeat_days" not in cols:
+            conn.execute("ALTER TABLE tasks ADD COLUMN repeat_days TEXT NOT NULL DEFAULT ''")
         if "meeting_url" not in cols:
             conn.execute("ALTER TABLE tasks ADD COLUMN meeting_url TEXT NOT NULL DEFAULT ''")
         if "location" not in cols:
             conn.execute("ALTER TABLE tasks ADD COLUMN location TEXT NOT NULL DEFAULT ''")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS activity_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                source TEXT NOT NULL,
+                action TEXT NOT NULL,
+                detail TEXT NOT NULL DEFAULT '',
+                task_id INTEGER
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_activity_created ON activity_log(created_at)"
+        )
 
     def _row_to_task(self, row: sqlite3.Row) -> Task:
         return Task(
@@ -153,6 +183,7 @@ class Database:
             repeat=row["repeat"] if "repeat" in row.keys() and row["repeat"] else "none",
             repeat_until=parse_iso(row["repeat_until"]) if "repeat_until" in row.keys() else None,
             repeat_from=parse_iso(row["repeat_from"]) if "repeat_from" in row.keys() else None,
+            repeat_days=row["repeat_days"] if "repeat_days" in row.keys() else "",
             meeting_url=row["meeting_url"] if "meeting_url" in row.keys() else "",
             location=row["location"] if "location" in row.keys() else "",
         )
@@ -186,11 +217,12 @@ class Database:
         repeat: str = "none",
         repeat_until: datetime | None = None,
         repeat_from: datetime | None = None,
+        repeat_days: str = "",
         meeting_url: str = "",
         location: str = "",
     ) -> Task:
         now = datetime.now().replace(microsecond=0)
-        if category == "meetings" and repeat not in ("", "none"):
+        if repeat not in ("", "none"):
             repeat_from = repeat_from or due_at
         with self.connect() as conn:
             cur = conn.execute(
@@ -198,8 +230,8 @@ class Database:
                 INSERT INTO tasks (
                     title, notes, category, due_at, priority, difficulty, status,
                     estimated_minutes, created_at, updated_at,
-                    repeat, repeat_until, repeat_from, meeting_url, location
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    repeat, repeat_until, repeat_from, repeat_days, meeting_url, location
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     title.strip(),
@@ -215,6 +247,7 @@ class Database:
                     repeat or "none",
                     iso(repeat_until),
                     iso(repeat_from),
+                    (repeat_days or "").strip(),
                     (meeting_url or "").strip(),
                     (location or "").strip(),
                 ),
@@ -236,13 +269,14 @@ class Database:
         repeat: str = "none",
         repeat_until: datetime | None = None,
         repeat_from: datetime | None = None,
+        repeat_days: str = "",
         meeting_url: str = "",
         location: str = "",
     ) -> Task:
         now = datetime.now().replace(microsecond=0)
         previous = self.get_task(task_id)
         due_changed = previous.due_at.replace(microsecond=0) != due_at.replace(microsecond=0)
-        if category == "meetings" and repeat not in ("", "none"):
+        if repeat not in ("", "none"):
             repeat_from = repeat_from or previous.repeat_from or due_at
             if previous.repeat_from and due_at < previous.repeat_from:
                 repeat_from = due_at
@@ -253,7 +287,7 @@ class Database:
                     title = ?, notes = ?, category = ?, due_at = ?,
                     priority = ?, difficulty = ?, estimated_minutes = ?, updated_at = ?,
                     due_notified = CASE WHEN ? THEN 0 ELSE due_notified END,
-                    repeat = ?, repeat_until = ?, repeat_from = ?,
+                    repeat = ?, repeat_until = ?, repeat_from = ?, repeat_days = ?,
                     meeting_url = ?, location = ?
                 WHERE id = ?
                 """,
@@ -270,6 +304,7 @@ class Database:
                     repeat or "none",
                     iso(repeat_until),
                     iso(repeat_from),
+                    (repeat_days or "").strip(),
                     (meeting_url or "").strip(),
                     (location or "").strip(),
                     task_id,
@@ -367,10 +402,8 @@ class Database:
         if now > task.due_at and not delay_reason:
             raise ValueError("A delay reason is required when finishing late")
         started = task.started_at or now
-        elapsed = task.elapsed_seconds(now)
-        if elapsed is None:
-            elapsed = 0
-        return self._set_fields(
+        elapsed = task.elapsed_seconds(now) or 0
+        closed = self._set_fields(
             task_id,
             status=Status.DONE.value,
             started_at=iso(started),
@@ -381,6 +414,7 @@ class Database:
             delay_reason=delay_reason,
             delay_note=(delay_note or "").strip() or None,
         )
+        return self._roll_if_recurring(closed)
 
     def miss_task(
         self,
@@ -395,7 +429,7 @@ class Database:
             raise ValueError("A reason is required when marking a task missed")
         now = datetime.now().replace(microsecond=0)
         elapsed = task.elapsed_seconds(now)
-        return self._set_fields(
+        missed = self._set_fields(
             task_id,
             status=Status.MISSED.value,
             finished_at=iso(now),
@@ -405,6 +439,7 @@ class Database:
             delay_reason=delay_reason,
             delay_note=(delay_note or "").strip() or None,
         )
+        return self._roll_if_recurring(missed)
 
     def reopen_task(self, task_id: int) -> Task:
         task = self.get_task(task_id)
@@ -451,6 +486,74 @@ class Database:
             due_at=iso(nxt),
             due_notified=0,
         )
+
+    def _roll_if_recurring(self, task: Task) -> Task:
+        if not task.is_recurring() or task.id is None:
+            return task
+        now = datetime.now().replace(microsecond=0)
+        after = task.due_at if task.due_at >= now else now
+        nxt = task.next_occurrence(after)
+        if nxt is None:
+            return task
+        return self._set_fields(
+            task.id,
+            status=Status.TODO.value,
+            due_at=iso(nxt),
+            started_at=None,
+            finished_at=None,
+            running_since=None,
+            worked_seconds=None,
+            last_ping_at=None,
+            pause_reason=None,
+            delay_reason=None,
+            delay_note=None,
+            due_notified=0,
+        )
+
+    def log_event(
+        self,
+        action: str,
+        detail: str = "",
+        *,
+        source: str = "app",
+        task_id: int | None = None,
+    ) -> None:
+        now = datetime.now().replace(microsecond=0)
+        cutoff = now - LOG_KEEP
+        with self.connect() as conn:
+            conn.execute("DELETE FROM activity_log WHERE created_at < ?", (iso(cutoff),))
+            conn.execute(
+                """
+                INSERT INTO activity_log (created_at, source, action, detail, task_id)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (iso(now), source, action, detail, task_id),
+            )
+
+    def list_activity(self, limit: int = 400) -> list[ActivityEvent]:
+        cutoff = datetime.now().replace(microsecond=0) - LOG_KEEP
+        with self.connect() as conn:
+            conn.execute("DELETE FROM activity_log WHERE created_at < ?", (iso(cutoff),))
+            rows = conn.execute(
+                """
+                SELECT * FROM activity_log
+                WHERE created_at >= ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                (iso(cutoff), limit),
+            ).fetchall()
+        return [
+            ActivityEvent(
+                id=row["id"],
+                created_at=parse_iso(row["created_at"]),  # type: ignore[arg-type]
+                source=row["source"],
+                action=row["action"],
+                detail=row["detail"] or "",
+                task_id=row["task_id"],
+            )
+            for row in rows
+        ]
 
     def status_filters(self) -> dict[str, bool]:
         return {
@@ -624,19 +727,22 @@ class Database:
     def tasks_for_date(self, day: date) -> list[Task]:
         start = datetime.combine(day, time.min)
         end = datetime.combine(day, time.max)
-        tasks = [
-            task
-            for task in self._query("WHERE due_at >= ? AND due_at <= ?", (iso(start), iso(end)))
-            if not task.is_meeting()
-        ]
-        seen = {task.id for task in tasks}
-        for meeting in self._query("WHERE category = 'meetings'"):
-            if meeting.id in seen:
+        tasks: list[Task] = []
+        seen: set[int] = set()
+        for task in self._query(""):
+            if task.id is not None and task.id in seen:
                 continue
-            hits = meeting.occurrences_between(start, end)
-            if hits:
-                tasks.append(replace(meeting, shown_at=hits[0]))
-                seen.add(meeting.id)
+            if task.is_recurring():
+                hits = task.occurrences_between(start, end)
+                if hits:
+                    tasks.append(replace(task, shown_at=hits[0]))
+                    if task.id is not None:
+                        seen.add(task.id)
+                continue
+            if start <= task.due_at <= end:
+                tasks.append(task)
+                if task.id is not None:
+                    seen.add(task.id)
         return ranked(tasks)
 
     def dates_with_tasks(self, year: int, month: int) -> set[date]:
@@ -647,14 +753,12 @@ class Database:
             end = datetime(year, month + 1, 1)
         last = end - timedelta(seconds=1)
         dates: set[date] = set()
-        for task in self._query(
-            "WHERE category != 'meetings' AND due_at >= ? AND due_at < ?",
-            (iso(start), iso(end)),
-        ):
-            dates.add(task.due_at.date())
-        for meeting in self._query("WHERE category = 'meetings'"):
-            for occ in meeting.occurrences_between(start, last):
-                dates.add(occ.date())
+        for task in self._query(""):
+            if task.is_recurring():
+                for occ in task.occurrences_between(start, last):
+                    dates.add(occ.date())
+            elif start <= task.due_at <= last:
+                dates.add(task.due_at.date())
         return dates
 
     def logbook(self, week_start: date) -> list[Task]:

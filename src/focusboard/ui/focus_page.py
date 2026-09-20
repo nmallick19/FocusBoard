@@ -208,6 +208,7 @@ class FocusPage(QWidget):
         if dialog.exec() != dialog.DialogCode.Accepted:
             return
         created = self.db.create_task(**dialog.values())
+        actions.log_action(self.db, self.hub, "create", created)
         self.hub.tasks_changed.emit()
         if created.id is not None:
             self.select_task_id(created.id)
@@ -220,6 +221,7 @@ class FocusPage(QWidget):
         if dialog.exec() != dialog.DialogCode.Accepted:
             return
         self.db.update_task(task.id, **dialog.values())  # type: ignore[arg-type]
+        actions.log_action(self.db, self.hub, "edit", task)
         self.hub.tasks_changed.emit()
 
     def _filter_project(self, tasks: list[Task]) -> list[Task]:

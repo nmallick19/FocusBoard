@@ -3,6 +3,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -19,6 +20,7 @@ from focusboard.ui.calendar_page import CalendarPage
 from focusboard.ui.chrome import NavButton, PrimaryButton
 from focusboard.ui.focus_page import FocusPage
 from focusboard.ui.logbook_page import LogbookPage
+from focusboard.ui.logger_page import LoggerPage
 
 
 class MainWindow(QMainWindow):
@@ -50,8 +52,9 @@ class MainWindow(QMainWindow):
         self.focus_nav = NavButton("Focus")
         self.calendar_nav = NavButton("Calendar")
         self.logbook_nav = NavButton("Logbook")
+        self.logger_nav = NavButton("Logger")
         self.focus_nav.setChecked(True)
-        for button in (self.focus_nav, self.calendar_nav, self.logbook_nav):
+        for button in (self.focus_nav, self.calendar_nav, self.logbook_nav, self.logger_nav):
             header_row.addWidget(button)
         header_row.addStretch()
         self.header_new = PrimaryButton("+ New task")
@@ -63,20 +66,24 @@ class MainWindow(QMainWindow):
         self.focus_page = FocusPage(db, hub)
         self.calendar_page = CalendarPage(db, hub)
         self.logbook_page = LogbookPage(db, hub)
+        self.logger_page = LoggerPage(db, hub)
         self.pages.addWidget(self.focus_page)
         self.pages.addWidget(self.calendar_page)
         self.pages.addWidget(self.logbook_page)
+        self.pages.addWidget(self.logger_page)
         layout.addWidget(self.pages, 1)
         self.setCentralWidget(shell)
 
         self.focus_nav.clicked.connect(lambda: self.show_page(0))
         self.calendar_nav.clicked.connect(lambda: self.show_page(1))
         self.logbook_nav.clicked.connect(lambda: self.show_page(2))
+        self.logger_nav.clicked.connect(lambda: self.show_page(3))
         self.header_new.clicked.connect(self.add_task)
 
         self._bind_shortcuts()
 
         hub.tasks_changed.connect(self.refresh)
+        hub.activity_changed.connect(self.logger_page.refresh)
         hub.show_main.connect(self.reveal)
         hub.show_main_task.connect(self.reveal_task)
         self.focus_page.sidebar.project_changed.connect(lambda _name: self._sync_new_button())
@@ -88,7 +95,7 @@ class MainWindow(QMainWindow):
 
     def show_page(self, index: int) -> None:
         self.pages.setCurrentIndex(index)
-        buttons = (self.focus_nav, self.calendar_nav, self.logbook_nav)
+        buttons = (self.focus_nav, self.calendar_nav, self.logbook_nav, self.logger_nav)
         for i, button in enumerate(buttons):
             button.setChecked(i == index)
         self.header_new.setVisible(index == 0)
@@ -116,7 +123,10 @@ class MainWindow(QMainWindow):
             "Ctrl+1": lambda: self.show_page(0),
             "Ctrl+2": lambda: self.show_page(1),
             "Ctrl+3": lambda: self.show_page(2),
+            "Ctrl+4": lambda: self.show_page(3),
             "Ctrl+E": self.edit_task,
+            "Ctrl+C": self.copy_task,
+            "Ctrl+V": self.paste_task,
             "Delete": self.delete_task,
             "S": self.start_task,
             "P": self.toggle_pause,
@@ -192,6 +202,18 @@ class MainWindow(QMainWindow):
         if self._current_task_page():
             actions.delete_task(self, self.db, self.hub, self.selected_task())
 
+    def copy_task(self) -> None:
+        if actions._text_field_focused():
+            return
+        if self._current_task_page():
+            actions.copy_item(self, self.db, self.hub, self.selected_task())
+
+    def paste_task(self) -> None:
+        if actions._text_field_focused():
+            return
+        if self._current_task_page() or self.pages.currentWidget() is self.focus_page:
+            actions.paste_item(self, self.db, self.hub)
+
     def clear_selection(self) -> None:
         page = self._current_task_page()
         if page:
@@ -212,6 +234,7 @@ class MainWindow(QMainWindow):
         self.focus_page.refresh()
         self.calendar_page.refresh()
         self.logbook_page.refresh()
+        self.logger_page.refresh()
 
     def reveal(self) -> None:
         self.show()
@@ -224,5 +247,9 @@ class MainWindow(QMainWindow):
         self.reveal()
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        app = QApplication.instance()
+        if app is not None and app.closingDown():
+            event.accept()
+            return
         event.ignore()
         self.hide()

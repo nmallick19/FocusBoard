@@ -47,7 +47,7 @@ QMainWindow, QWidget#AppShell, QWidget#FocusBody {
 QCheckBox, QRadioButton, QLabel, QGroupBox, QTabBar::tab {
     color: palette(window-text);
 }
-QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QComboBox, QDateTimeEdit,
+QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QComboBox, QDateTimeEdit, QDateEdit, QTimeEdit,
 QListWidget, QTableWidget, QTreeWidget {
     color: palette(text);
     background: palette(base);
@@ -58,7 +58,7 @@ QListWidget, QTableWidget, QTreeWidget {
     padding: 6px 8px;
 }
 QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus, QSpinBox:focus,
-QComboBox:focus, QDateTimeEdit:focus {
+QComboBox:focus, QDateTimeEdit:focus, QDateEdit:focus, QTimeEdit:focus {
     border: 1px solid palette(highlight);
 }
 QMenu {
@@ -189,6 +189,22 @@ QPushButton#FilterChip:checked {
     color: palette(highlighted-text);
     border-color: palette(highlight);
 }
+QPushButton#DayChip {
+    background: transparent;
+    border: 1px solid palette(mid);
+    border-radius: 8px;
+    padding: 6px 0;
+    min-width: 40px;
+    font-weight: 600;
+}
+QPushButton#DayChip:hover {
+    background: palette(alternate-base);
+}
+QPushButton#DayChip:checked {
+    background: palette(highlight);
+    color: palette(highlighted-text);
+    border-color: palette(highlight);
+}
 QFrame#FocusSidebar {
     background: palette(base);
     border: none;
@@ -286,7 +302,7 @@ QLabel#CountBadge {
 }
 QLabel#DateHeader {
     color: palette(window-text);
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 700;
     letter-spacing: 0.3px;
     padding: 10px 8px 6px 8px;
@@ -300,20 +316,61 @@ QLabel#TimeCaption {
     font-size: 13px;
     font-weight: 600;
 }
-QLabel#TaskDueDate {
-    font-size: 13px;
+QPushButton#DatePicker, QPushButton#TimePicker {
+    color: palette(text);
+    background: palette(base);
+    border: 1px solid palette(mid);
+    border-radius: 8px;
+    padding: 6px 12px;
     font-weight: 600;
-    color: palette(window-text);
+    text-align: left;
+}
+QPushButton#TimePicker {
+    min-width: 96px;
+    text-align: center;
+}
+QPushButton#DatePicker:hover, QPushButton#TimePicker:hover,
+QPushButton#DatePicker:focus, QPushButton#TimePicker:focus {
+    border: 1px solid palette(highlight);
+}
+QFrame#TimePopup, QFrame#CalendarPopup {
+    background: palette(base);
+    border: 1px solid palette(mid);
+    border-radius: 10px;
+}
+QListWidget#TimeList {
+    border: none;
+    font-size: 16px;
+    font-weight: 600;
+    outline: none;
+    background: palette(base);
+}
+QListWidget#TimeList::item {
+    padding: 6px;
+    border-radius: 6px;
+}
+QListWidget#TimeList::item:selected {
+    background: palette(highlight);
+    color: palette(highlighted-text);
+}
+QWidget#DueBlock {
+    border-radius: 12px;
+    min-width: 112px;
+}
+QLabel#TaskDueDate {
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.2px;
 }
 QLabel#TaskDueTime {
-    font-size: 22px;
-    font-weight: 700;
-    color: palette(window-text);
-    letter-spacing: -0.4px;
+    font-size: 26px;
+    font-weight: 800;
+    letter-spacing: -0.6px;
+    padding: 1px 0 2px 0;
 }
-QLabel#TaskDueDate[overdue="true"],
-QLabel#TaskDueTime[overdue="true"] {
-    color: #E11D48;
+QLabel#TaskDueRemain {
+    font-size: 13px;
+    font-weight: 700;
 }
 QLabel#StatusPill {
     font-size: 11px;
@@ -378,7 +435,7 @@ QLabel#CalendarMonth {
 QCalendarWidget#MonthCalendar {
     background: palette(base);
     border: none;
-    font-size: 13px;
+    font-size: 15px;
 }
 QCalendarWidget QWidget#qt_calendar_navigationbar {
     background: palette(base);
@@ -388,7 +445,7 @@ QCalendarWidget QAbstractItemView {
     selection-background-color: palette(highlight);
     selection-color: palette(highlighted-text);
     outline: none;
-    font-size: 13px;
+    font-size: 15px;
 }
 QCalendarWidget QTableView {
     background: palette(base);
@@ -400,9 +457,9 @@ QCalendarWidget QHeaderView::section {
     background: palette(base);
     color: palette(mid);
     border: none;
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 600;
-    padding: 6px 0;
+    padding: 8px 0;
 }
 QTableWidget#LogTable {
     border: 1px solid palette(mid);
@@ -430,6 +487,70 @@ QScrollBar::handle:vertical {
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
     height: 0;
 }
+"""
+
+_WHEN_LIGHT = """
+QWidget#DueBlock[due="today"] {
+    background: #DBEAFE;
+    border: 1px solid #93C5FD;
+    border-left: 4px solid #2563EB;
+}
+QLabel#TaskDueDate[due="today"], QLabel#TaskDueRemain[due="today"] { color: #1D4ED8; }
+QLabel#TaskDueTime[due="today"] { color: #1E40AF; }
+QWidget#DueBlock[due="tomorrow"] {
+    background: #FEF3C7;
+    border: 1px solid #FCD34D;
+    border-left: 4px solid #D97706;
+}
+QLabel#TaskDueDate[due="tomorrow"], QLabel#TaskDueRemain[due="tomorrow"] { color: #B45309; }
+QLabel#TaskDueTime[due="tomorrow"] { color: #C2410C; }
+QWidget#DueBlock[due="later"] {
+    background: #EDE9FE;
+    border: 1px solid #C4B5FD;
+    border-left: 4px solid #7C3AED;
+}
+QLabel#TaskDueDate[due="later"], QLabel#TaskDueRemain[due="later"] { color: #6D28D9; }
+QLabel#TaskDueTime[due="later"] { color: #5B21B6; }
+QWidget#DueBlock[due="overdue"] {
+    background: #FFE4E6;
+    border: 1px solid #FECDD3;
+    border-left: 4px solid #E11D48;
+}
+QLabel#TaskDueDate[due="overdue"],
+QLabel#TaskDueRemain[due="overdue"],
+QLabel#TaskDueTime[due="overdue"] { color: #BE123C; }
+QLabel#TaskDueTime[due="overdue"] { color: #E11D48; }
+"""
+
+_WHEN_DARK = """
+QWidget#DueBlock[due="today"] {
+    background: #1E3A5F;
+    border: 1px solid #3B82F6;
+    border-left: 4px solid #60A5FA;
+}
+QLabel#TaskDueDate[due="today"], QLabel#TaskDueRemain[due="today"] { color: #93C5FD; }
+QLabel#TaskDueTime[due="today"] { color: #BFDBFE; }
+QWidget#DueBlock[due="tomorrow"] {
+    background: #422006;
+    border: 1px solid #F59E0B;
+    border-left: 4px solid #FBBF24;
+}
+QLabel#TaskDueDate[due="tomorrow"], QLabel#TaskDueRemain[due="tomorrow"] { color: #FCD34D; }
+QLabel#TaskDueTime[due="tomorrow"] { color: #FDE68A; }
+QWidget#DueBlock[due="later"] {
+    background: #2E1065;
+    border: 1px solid #8B5CF6;
+    border-left: 4px solid #A78BFA;
+}
+QLabel#TaskDueDate[due="later"], QLabel#TaskDueRemain[due="later"] { color: #C4B5FD; }
+QLabel#TaskDueTime[due="later"] { color: #DDD6FE; }
+QWidget#DueBlock[due="overdue"] {
+    background: #4C0519;
+    border: 1px solid #FB7185;
+    border-left: 4px solid #FB7185;
+}
+QLabel#TaskDueDate[due="overdue"], QLabel#TaskDueRemain[due="overdue"] { color: #FDA4AF; }
+QLabel#TaskDueTime[due="overdue"] { color: #FECDD3; }
 """
 
 
@@ -546,7 +667,7 @@ def apply_theme(app: QApplication, theme: str) -> None:
     font = app.font()
     font.setPointSize(max(font.pointSize(), 11))
     app.setFont(font)
-    app.setStyleSheet(_APP_QSS)
+    app.setStyleSheet(_APP_QSS + (_WHEN_DARK if dark else _WHEN_LIGHT))
     app.setPalette(palette)
     style = app.style()
     for widget in app.allWidgets():

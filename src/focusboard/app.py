@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import signal
 import sys
 from datetime import date, datetime
 
@@ -16,6 +17,7 @@ from focusboard.theme import apply_theme, build_theme_menu
 from focusboard.single_instance import acquire_instance_lock
 from focusboard.ui.main_window import MainWindow
 from focusboard.ui.tray import TrayIcon
+from focusboard.ui.actions import log_action
 from focusboard.util import format_due
 from focusboard.watch import FocusWatch
 
@@ -42,11 +44,13 @@ class DueNotifier(QObject):
             if task.due_at <= now and not task.due_notified:
                 notify("Task due", f"{task.title} — {format_due(task.due_at, now)}", self.tray)
                 self.db.mark_due_notified(task.id)
+                log_action(self.db, self.hub, "notify due", task, source="app")
         for meeting in self.db.list_open_meetings():
             if meeting.id is None:
                 continue
             if meeting.due_at <= now:
                 self.db.advance_meeting(meeting.id)
+                log_action(self.db, self.hub, "advance meeting", meeting, source="app")
                 rolled = True
                 continue
             if meeting.meeting_reminder_due(now) and session_is_present():
@@ -58,6 +62,7 @@ class DueNotifier(QObject):
                     self.tray,
                 )
                 self.db.mark_due_notified(meeting.id)
+                log_action(self.db, self.hub, "notify meeting", meeting, source="app")
         if rolled:
             self.hub.tasks_changed.emit()
 
@@ -79,6 +84,7 @@ class DueNotifier(QObject):
             extra = "…" if len(buckets.coming) > 4 else ""
             parts.append(f"Next 3 days ({len(buckets.coming)}): {titles}{extra}")
         notify("What needs doing", "\n".join(parts), self.tray)
+        log_action(self.db, self.hub, "planning digest", source="app", detail="\n".join(parts))
 
 
 def _build_menu(window: MainWindow, db: Database, hub: Hub) -> None:
@@ -139,6 +145,34 @@ def main(argv: list[str] | None = None) -> int:
     app._notifier = DueNotifier(db, hub, tray, app)  # noqa: SLF001
     app._watch = FocusWatch(db, hub, window, app)  # noqa: SLF001
     app._instance_lock = instance_lock  # noqa: SLF001 — release on exit
+
+    def _shutdown() -> None:
+        QApplication.restoreOverrideCursor()
+        watch = getattr(app, "_watch", None)
+        if watch is not None:
+            watch.stop()
+            app._watch = None
+        notifier = getattr(app, "_notifier", None)
+        if notifier is not None:
+            notifier.timer.stop()
+            app._notifier = None
+        tray = getattr(app, "_tray", None)
+        if tray is not None:
+            tray.hide()
+            tray.setContextMenu(None)
+            app._tray = None
+        lock = getattr(app, "_instance_lock", None)
+        if lock is not None:
+            lock.unlock()
+            app._instance_lock = None
+
+    app.aboutToQuit.connect(_shutdown)
+
+    def _on_term(_signum, _frame) -> None:
+        QTimer.singleShot(0, app.quit)
+
+    signal.signal(signal.SIGTERM, _on_term)
+    signal.signal(signal.SIGINT, _on_term)
     return app.exec()
 
 

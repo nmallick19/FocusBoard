@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+from datetime import datetime
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QFont
@@ -19,13 +20,12 @@ from focusboard.models import (
     DIFFICULTY_LABELS,
     PAUSE_REASON_LABELS,
     PRIORITY_LABELS,
-    REPEAT_LABELS,
     STATUS_LABELS,
     Status,
     Task,
 )
 from focusboard.ui.chrome import DangerButton, GhostButton, IconButton, PrimaryButton
-from focusboard.ui.task_list import TimeBar
+from focusboard.ui.task_list import DueStamp, TimeBar
 from focusboard.util import format_due, format_duration, format_estimated, format_time_progress
 
 
@@ -106,7 +106,16 @@ class TaskInspector(QFrame):
         self.notes.setWordWrap(True)
         body.addWidget(self.notes)
 
-        self.due = _Field("Due")
+        self.due = QWidget()
+        due_col = QVBoxLayout(self.due)
+        due_col.setContentsMargins(0, 0, 0, 10)
+        due_col.setSpacing(4)
+        self.due_caption = QLabel("Due")
+        self.due_caption.setObjectName("InspectorCaption")
+        self.due_stamp = DueStamp(align_right=False)
+        self.due_stamp.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        due_col.addWidget(self.due_caption)
+        due_col.addWidget(self.due_stamp, 0, Qt.AlignmentFlag.AlignLeft)
         self.repeats = _Field("Repeats")
         self.until = _Field("Until")
         self.place = _Field("Where")
@@ -211,27 +220,31 @@ class TaskInspector(QFrame):
         else:
             self.notes.setVisible(False)
         meeting = task.is_meeting()
-        self.due.caption.setText("Next" if meeting else "Due")
-        self.due.set_text(format_due(task.when()))
+        self.due_caption.setText("Next" if meeting else "Due")
+        overdue = task.is_incomplete() and task.when() < datetime.now()
+        self.due_stamp.set_due(task.when(), overdue=overdue, show_remain=task.is_incomplete())
+        self.repeats.set_text(task.repeat_label())
+        self.repeats.setVisible(bool(task.is_recurring() or meeting))
+        if task.is_recurring() and task.repeat_until:
+            self.until.set_text(task.repeat_until.strftime("%-d %b %Y"))
+            self.until.setVisible(True)
+        else:
+            self.until.setVisible(False)
         if meeting:
-            self.repeats.set_text(REPEAT_LABELS.get(task.repeat, "Does not repeat"))
-            self.repeats.setVisible(True)
-            if task.is_recurring() and task.repeat_until:
-                self.until.set_text(task.repeat_until.strftime("%-d %b %Y"))
-                self.until.setVisible(True)
-            else:
-                self.until.setVisible(False)
             url = task.meeting_url.strip()
             if url:
                 safe = html.escape(url, quote=True)
                 self.place.value.setText(f'<a href="{safe}">{html.escape(url)}</a>')
                 self.place.value.setOpenExternalLinks(True)
                 self.place.value.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
-            else:
+                self.place.setVisible(True)
+            elif task.location.strip():
                 self.place.value.setOpenExternalLinks(False)
                 self.place.value.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
                 self.place.set_text(task.location.strip())
-            self.place.setVisible(True)
+                self.place.setVisible(True)
+            else:
+                self.place.setVisible(False)
             self.priority.setVisible(False)
             self.difficulty.setVisible(False)
             self.status.setVisible(False)
@@ -251,8 +264,6 @@ class TaskInspector(QFrame):
             self.reopen_btn.setVisible(False)
             self._clock.stop()
             return
-        self.repeats.setVisible(False)
-        self.until.setVisible(False)
         self.place.setVisible(False)
         self.place.value.setOpenExternalLinks(False)
         self.priority.setVisible(True)

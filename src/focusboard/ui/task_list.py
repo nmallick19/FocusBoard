@@ -20,14 +20,13 @@ from focusboard.models import (
     CATEGORY_LABELS,
     DIFFICULTY_LABELS,
     PRIORITY_LABELS,
-    REPEAT_LABELS,
     STATUS_LABELS,
     Status,
     Task,
 )
 from focusboard.ui.chrome import DateHeader, EmptyHint
 from focusboard.ui.grouping import date_heading, group_by_due_date, split_overdue
-from focusboard.util import due_row_parts, format_time_progress
+from focusboard.util import due_band, due_row_parts, format_time_progress
 
 PRIORITY_COLORS = {
     "high": "#E11D48",
@@ -47,6 +46,43 @@ def _refresh_style(widget: QWidget) -> None:
     widget.style().unpolish(widget)
     widget.style().polish(widget)
     widget.update()
+
+
+class DueStamp(QWidget):
+    def __init__(self, parent=None, *, align_right: bool = True) -> None:
+        super().__init__(parent)
+        self.setObjectName("DueBlock")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(0)
+        align = Qt.AlignmentFlag.AlignRight if align_right else Qt.AlignmentFlag.AlignLeft
+        align |= Qt.AlignmentFlag.AlignVCenter
+        self.day = QLabel("—")
+        self.day.setObjectName("TaskDueDate")
+        self.time = QLabel("—")
+        self.time.setObjectName("TaskDueTime")
+        self.remain = QLabel("")
+        self.remain.setObjectName("TaskDueRemain")
+        for label in (self.day, self.time, self.remain):
+            label.setAlignment(align)
+            label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            layout.addWidget(label)
+
+    def set_due(self, due_at: datetime, *, overdue: bool = False, show_remain: bool = True) -> None:
+        day_text, time_text, remain_text = due_row_parts(due_at)
+        self.day.setText(day_text)
+        self.time.setText(time_text)
+        self.remain.setText(remain_text)
+        self.remain.setVisible(show_remain and bool(remain_text))
+        band = due_band(due_at, overdue=overdue)
+        self.setProperty("due", band)
+        for label in (self.day, self.time, self.remain):
+            label.setProperty("due", band)
+            _refresh_style(label)
+        _refresh_style(self)
 
 
 class StatusMark(QWidget):
@@ -212,7 +248,7 @@ class TaskRow(QFrame):
             if place:
                 bits.append(place)
             if task.is_recurring():
-                bits.append(REPEAT_LABELS.get(task.repeat, "Repeats"))
+                bits.append(task.repeat_label())
             else:
                 bits.append("Meeting")
         else:
@@ -221,6 +257,8 @@ class TaskRow(QFrame):
                 DIFFICULTY_LABELS.get(task.difficulty, task.difficulty),
                 CATEGORY_LABELS.get(task.category, task.category),
             ]
+            if task.is_recurring():
+                bits.append(task.repeat_label())
             if task.is_paused():
                 bits.append("Paused")
             elif task.status == Status.ONGOING:
@@ -237,34 +275,16 @@ class TaskRow(QFrame):
         text.addLayout(meta)
         layout.addLayout(text, 1)
 
-        day_text, time_text = due_row_parts(task.when())
-        due_block = QWidget()
-        due_block.setObjectName("DueBlock")
-        due_block.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        due_layout = QVBoxLayout(due_block)
-        due_layout.setContentsMargins(8, 0, 0, 0)
-        due_layout.setSpacing(0)
-        due_day = QLabel(day_text)
-        due_day.setObjectName("TaskDueDate")
-        due_day.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        due_time = QLabel(time_text)
-        due_time.setObjectName("TaskDueTime")
-        due_time.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        if self._is_overdue():
-            due_day.setProperty("overdue", True)
-            due_time.setProperty("overdue", True)
-            _refresh_style(due_day)
-            _refresh_style(due_time)
-        due_layout.addWidget(due_day)
-        due_layout.addWidget(due_time)
-        layout.addWidget(due_block, 0, Qt.AlignmentFlag.AlignVCenter)
+        due_stamp = DueStamp()
+        due_stamp.set_due(task.when(), overdue=self._is_overdue(), show_remain=task.is_incomplete())
+        layout.addWidget(due_stamp, 0, Qt.AlignmentFlag.AlignVCenter)
         shell.addLayout(layout)
 
         self.time_bar = TimeBar()
         shell.addWidget(self.time_bar)
         self.tick()
 
-        for label in (title, meta_label, self.time_caption, due_day, due_time):
+        for label in (title, meta_label, self.time_caption):
             label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
     def tick(self) -> None:
@@ -303,6 +323,7 @@ class TaskRow(QFrame):
         self.selected.emit(self.task)
         menu = QMenu(self)
         if self.task.is_meeting():
+            menu.addAction("Copy", lambda: self.context_action.emit("copy", self.task))
             menu.addAction("Edit", lambda: self.context_action.emit("edit", self.task))
             menu.addAction("Delete", lambda: self.context_action.emit("delete", self.task))
             menu.exec(self.mapToGlobal(pos))
@@ -324,6 +345,7 @@ class TaskRow(QFrame):
         if closed:
             menu.addAction("Reopen", lambda: self.context_action.emit("reopen", self.task))
         menu.addSeparator()
+        menu.addAction("Copy", lambda: self.context_action.emit("copy", self.task))
         menu.addAction("Edit", lambda: self.context_action.emit("edit", self.task))
         menu.addAction("Delete", lambda: self.context_action.emit("delete", self.task))
         menu.exec(self.mapToGlobal(pos))

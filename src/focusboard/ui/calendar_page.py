@@ -40,7 +40,7 @@ class CalendarPage(QWidget):
         cal_wrap = QFrame()
         cal_wrap.setObjectName("CalendarCard")
         cal_wrap.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        cal_wrap.setFixedWidth(320)
+        cal_wrap.setFixedWidth(360)
         cal_wrap.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Maximum)
         cal_layout = QVBoxLayout(cal_wrap)
         cal_layout.setContentsMargins(12, 10, 12, 12)
@@ -67,7 +67,7 @@ class CalendarPage(QWidget):
         self.calendar.setNavigationBarVisible(False)
         self.calendar.setVerticalHeaderFormat(QCalendarWidget.VerticalHeaderFormat.NoVerticalHeader)
         self.calendar.setHorizontalHeaderFormat(QCalendarWidget.HorizontalHeaderFormat.ShortDayNames)
-        self.calendar.setFixedSize(296, 260)
+        self.calendar.setFixedSize(336, 300)
         self.calendar.selectionChanged.connect(self.refresh)
         self.calendar.currentPageChanged.connect(lambda *_: self._on_page_changed())
         self.prev_month.clicked.connect(self.calendar.showPreviousMonth)
@@ -161,6 +161,7 @@ class CalendarPage(QWidget):
         if dialog.exec() != dialog.DialogCode.Accepted:
             return
         created = self.db.create_task(**dialog.values())
+        actions.log_action(self.db, self.hub, "create", created)
         self.hub.tasks_changed.emit()
         if created.id is not None:
             self.select_task_id(created.id)
@@ -173,6 +174,7 @@ class CalendarPage(QWidget):
         if dialog.exec() != dialog.DialogCode.Accepted:
             return
         self.db.update_task(task.id, **dialog.values())  # type: ignore[arg-type]
+        actions.log_action(self.db, self.hub, "edit", task)
         self.hub.tasks_changed.emit()
 
     def refresh(self) -> None:

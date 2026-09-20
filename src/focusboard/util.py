@@ -64,23 +64,57 @@ def format_due(due_at: datetime, now: datetime | None = None) -> str:
     return f"{prefix} {time_part}"
 
 
-def due_row_parts(due_at: datetime, now: datetime | None = None) -> tuple[str, str]:
+def due_row_parts(due_at: datetime, now: datetime | None = None) -> tuple[str, str, str]:
     now = now or datetime.now()
     due_day = due_at.date()
     today = now.date()
     time_part = due_at.strftime("%H:%M")
+    remain = format_deadline(due_at, now)
     if due_day == today:
-        return "Today", time_part
+        return "Today", time_part, remain
     if due_day == today + timedelta(days=1):
-        return "Tomorrow", time_part
+        return "Tomorrow", time_part, remain
     if due_day == today - timedelta(days=1):
-        return "Yesterday", time_part
-    return due_at.strftime("%-d %b"), time_part
+        return "Yesterday", time_part, remain
+    return due_at.strftime("%a %-d %b"), time_part, remain
+
+
+def due_band(due_at: datetime, now: datetime | None = None, *, overdue: bool | None = None) -> str:
+    now = now or datetime.now()
+    if overdue or (overdue is None and due_at < now):
+        return "overdue"
+    day = due_at.date()
+    today = now.date()
+    if day == today:
+        return "today"
+    if day == today + timedelta(days=1):
+        return "tomorrow"
+    return "later"
 
 
 def format_due_row(due_at: datetime, now: datetime | None = None) -> str:
-    day, time_part = due_row_parts(due_at, now)
-    return f"{day} {time_part}"
+    day, time_part, remain = due_row_parts(due_at, now)
+    return f"{day} {time_part} · {remain}"
+
+
+def format_deadline(due_at: datetime, now: datetime | None = None) -> str:
+    """Hours if the deadline is within a day, otherwise whole days."""
+    now = now or datetime.now()
+    remaining = (due_at - now).total_seconds()
+    late = remaining < 0
+    span = abs(remaining)
+    if span < 3600:
+        amount = max(1, int(round(span / 60)))
+        unit = "m"
+    elif span < 24 * 3600:
+        amount = max(1, int(round(span / 3600)))
+        unit = "h"
+    else:
+        amount = max(1, int(round(span / 86400)))
+        unit = "d"
+    if late:
+        return f"{amount}{unit} late"
+    return f"in {amount}{unit}"
 
 
 def format_countdown(seconds: float) -> str:

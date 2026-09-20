@@ -17,6 +17,7 @@ from focusboard.notify import notify
 from focusboard.session import SessionGuard
 from focusboard.sound import play_gonk
 from focusboard.ui.prompts import CheckInDialog, SessionPauseDialog
+from focusboard.ui.actions import log_action
 
 
 class FocusWatch(QObject):
@@ -35,6 +36,11 @@ class FocusWatch(QObject):
         hub.tasks_changed.connect(self._schedule_checkin)
         QTimer.singleShot(800, self._on_startup)
         self._schedule_checkin()
+
+    def stop(self) -> None:
+        self._busy = True
+        self._checkin.stop()
+        self._session.stop()
 
     def _raise(self) -> None:
         self.window.show()
@@ -70,10 +76,12 @@ class FocusWatch(QObject):
         accepted = dialog.exec() == CheckInDialog.DialogCode.Accepted
         if accepted:
             self.db.touch_ping(task.id)
+            log_action(self.db, self.hub, "check-in acknowledge", task, source="user")
         else:
             self.db.pause_task(task.id, PAUSE_REASON_CHECKIN)
             play_gonk(announce=True)
             notify("Paused", f"“{task.title}” is paused.")
+            log_action(self.db, self.hub, "check-in pause", task, source="user")
         self.hub.tasks_changed.emit()
         self._busy = False
         self._schedule_checkin()
@@ -87,6 +95,14 @@ class FocusWatch(QObject):
             "display_off": PAUSE_REASON_DISPLAY_OFF,
         }.get(reason, PAUSE_REASON_SCREEN_LOCK)
         self.db.pause_task(running[0].id, pause_reason)
+        log_action(
+            self.db,
+            self.hub,
+            "auto-pause",
+            running[0],
+            source="app",
+            detail=f"{running[0].title} ({reason})",
+        )
         self.hub.tasks_changed.emit()
         self._checkin.stop()
 
@@ -95,6 +111,8 @@ class FocusWatch(QObject):
         self._schedule_checkin()
 
     def _on_startup(self) -> None:
+        if self._busy:
+            return
         if self._session.is_away():
             self._on_session_away("screen_lock")
             return
@@ -116,8 +134,10 @@ class FocusWatch(QObject):
         accepted = dialog.exec() == SessionPauseDialog.DialogCode.Accepted
         if accepted:
             self.db.resume_task(task.id)
+            log_action(self.db, self.hub, "resume after lock", task, source="user")
         else:
             self.db.keep_paused(task.id)
+            log_action(self.db, self.hub, "keep paused after lock", task, source="user")
         self.hub.tasks_changed.emit()
         self._busy = False
         self._schedule_checkin()
